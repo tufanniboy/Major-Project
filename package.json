@@ -1,0 +1,28 @@
+{
+  "name": "llm-powered-soc-analyst",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Controlled academic SOC simulation with a vanilla JavaScript console and private LAN portal.",
+  "scripts": {
+    "setup": "node scripts/setup.js",
+    "doctor": "node scripts/doctor.js",
+    "start": "node server.js --lan",
+    "start:local": "node server.js",
+    "start:lan": "node server.js --lan",
+    "stop": "node scripts/stop.js",
+    "test": "node --test tests/*.test.js",
+    "check": "node scripts/check.js",
+    "start:hosted": "node server.js --hosted",
+    "start:demo": "node server.js --seed",
+    "sensor:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows-event-collector.ps1",
+    "setup:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-monitoring.ps1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "pg": "^8.23.0",
+    "qrcode": "^1.5.4"
+  }
+}

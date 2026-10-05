@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: soc-analyst-lab
+    runtime: node
+    plan: free
+    buildCommand: npm ci --omit=dev
+    startCommand: npm run start:hosted
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: SOC_HOSTED
+        value: "true"
+      - key: SOC_ADMIN_PASSWORD
+        sync: false
+      - key: LAB_JOIN_CODE
+        generateValue: true
+      - key: SENSOR_INGEST_TOKEN
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: soc-analyst-db
+          property: connectionString
+
+databases:
+  - name: soc-analyst-db
+    plan: free
+    databaseName: soc_lab
+    user: soc_lab
+    ipAllowList: []
