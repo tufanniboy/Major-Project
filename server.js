@@ -27,7 +27,7 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
   const operator = req => hosted ? auth.authorized(req) : local(req);
   const reply = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
   const tokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
-  let initialized = !storage, storageFailure = false, consecutiveFailures = 0, lastSaved = null, work = Promise.resolve(), closing = false;
+  let initialized = !storage, storageFailure = false, lastSaved = null, work = Promise.resolve(), closing = false;
   const databaseError = () => Object.assign(new Error('PostgreSQL is unavailable or this lab changed on another server. Restart the backend after checking the database. No unsaved changes were accepted.'), { code: 'SOC_DATABASE' });
   const ready = storage ? (async () => {
     const snapshot = await storage.load(captureLab(engine, registrations));
@@ -43,26 +43,13 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
   // Attach immediately: callers still receive the original rejection via ready.
   ready.catch(() => { storageFailure = true; });
   const enqueue = operation => { const job = work.then(operation); work = job.catch(() => {}); return job; };
-  const persist = async (fromTick = false) => {
+  const persist = async () => {
     if (!storage) return;
     try {
       const snapshot = captureLab(engine, registrations);
       await storage.save(snapshot);
       lastSaved = snapshot;
-      consecutiveFailures = 0;
-    } catch (err) {
-      // CAS conflict means another server wrote: fail immediately regardless of source.
-      const isCasConflict = err?.message?.includes('Another server changed');
-      if (fromTick && !isCasConflict) {
-        // Transient connection error during background tick — allow up to 3 retries
-        // before declaring storage permanently failed. This prevents a brief free-tier
-        // PostgreSQL hiccup from killing the health check and triggering a Render restart.
-        consecutiveFailures++;
-        if (consecutiveFailures < 3) {
-          console.error(`PostgreSQL tick save failed (attempt ${consecutiveFailures}/3). Retrying next tick.`);
-          return; // Do not update lastSaved; next tick will retry.
-        }
-      }
+    } catch {
       storageFailure = true;
       restoreLab(engine, registrations, lastSaved);
       for (const client of clients) client.end();
@@ -70,10 +57,32 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
       throw databaseError();
     }
   };
-  const publish = async (fromTick = false) => {
-    await persist(fromTick);
+  const publish = async () => {
+    await persist();
     const data = `data: ${JSON.stringify(engine.state)}\n\n`;
     for (const res of clients) res.write(data);
+  };
+  // Push the current state to all SSE clients without writing to the database.
+  // Used by the tick loop so simulation updates reach the browser every second
+  // without hammering the free-tier PostgreSQL on every tick.
+  const broadcast = () => {
+    const data = `data: ${JSON.stringify(engine.state)}\n\n`;
+    for (const res of clients) res.write(data);
+  };
+  // Soft periodic checkpoint: saves state to PostgreSQL but does NOT set
+  // storageFailure on failure, so a transient DB hiccup during a background
+  // tick never kills the health check or triggers a Render restart.
+  // API-driven persists (sensor events, analyst actions) still use the hard
+  // persist() path and will fail visibly if the database is truly unavailable.
+  const checkpoint = async () => {
+    if (!storage || storageFailure) return;
+    try {
+      const snapshot = captureLab(engine, registrations);
+      await storage.save(snapshot);
+      lastSaved = snapshot;
+    } catch {
+      console.error('Periodic checkpoint failed. State will be re-persisted on the next sensor event or analyst action.');
+    }
   };
   const startModelJob = (alert, bundle, requestId) => {
     const controller = new AbortController(), generation = engine.state.generation;
@@ -263,7 +272,11 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
         }
       }
     }
-    engine.tick(); await publish(true);
+    engine.tick();
+    // Broadcast state to SSE clients immediately — no database write.
+    // A soft checkpoint saves to PostgreSQL every 30 ticks (~30 s).
+    broadcast();
+    if (engine.tickCount % 30 === 0) await checkpoint();
   };
   let tickPending = false;
   const timer = setInterval(() => {
