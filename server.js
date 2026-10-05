@@ -27,7 +27,7 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
   const operator = req => hosted ? auth.authorized(req) : local(req);
   const reply = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(data)); };
   const tokenHash = token => createHash('sha256').update(String(token || '')).digest('hex');
-  let initialized = !storage, storageFailure = false, lastSaved = null, work = Promise.resolve(), closing = false;
+  let initialized = !storage, storageFailure = false, consecutiveFailures = 0, lastSaved = null, work = Promise.resolve(), closing = false;
   const databaseError = () => Object.assign(new Error('PostgreSQL is unavailable or this lab changed on another server. Restart the backend after checking the database. No unsaved changes were accepted.'), { code: 'SOC_DATABASE' });
   const ready = storage ? (async () => {
     const snapshot = await storage.load(captureLab(engine, registrations));
@@ -43,13 +43,26 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
   // Attach immediately: callers still receive the original rejection via ready.
   ready.catch(() => { storageFailure = true; });
   const enqueue = operation => { const job = work.then(operation); work = job.catch(() => {}); return job; };
-  const persist = async () => {
+  const persist = async (fromTick = false) => {
     if (!storage) return;
     try {
       const snapshot = captureLab(engine, registrations);
       await storage.save(snapshot);
       lastSaved = snapshot;
-    } catch {
+      consecutiveFailures = 0;
+    } catch (err) {
+      // CAS conflict means another server wrote: fail immediately regardless of source.
+      const isCasConflict = err?.message?.includes('Another server changed');
+      if (fromTick && !isCasConflict) {
+        // Transient connection error during background tick — allow up to 3 retries
+        // before declaring storage permanently failed. This prevents a brief free-tier
+        // PostgreSQL hiccup from killing the health check and triggering a Render restart.
+        consecutiveFailures++;
+        if (consecutiveFailures < 3) {
+          console.error(`PostgreSQL tick save failed (attempt ${consecutiveFailures}/3). Retrying next tick.`);
+          return; // Do not update lastSaved; next tick will retry.
+        }
+      }
       storageFailure = true;
       restoreLab(engine, registrations, lastSaved);
       for (const client of clients) client.end();
@@ -57,8 +70,8 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
       throw databaseError();
     }
   };
-  const publish = async () => {
-    await persist();
+  const publish = async (fromTick = false) => {
+    await persist(fromTick);
     const data = `data: ${JSON.stringify(engine.state)}\n\n`;
     for (const res of clients) res.write(data);
   };
@@ -250,7 +263,7 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
         }
       }
     }
-    engine.tick(); await publish();
+    engine.tick(); await publish(true);
   };
   let tickPending = false;
   const timer = setInterval(() => {
