@@ -111,8 +111,9 @@ export function createLabServer({ seed = false, lan = false, hosted = false, pas
     res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
     try {
       const remote = (req.socket.remoteAddress || '').replace('::ffff:', '');
-      if (!hosted && !local(req) && (!lan || !isPrivateIp(remote))) return reply(res, 403, { error: 'Only local or private lab connections are permitted.' });
       const url = new URL(req.url, 'http://localhost');
+      const isPublicEndpoint = url.pathname === '/api/health' || (url.pathname === '/api/sensors/windows' && req.method === 'POST');
+      if (!hosted && !local(req) && (!lan || !isPrivateIp(remote)) && !isPublicEndpoint) return reply(res, 403, { error: 'Only local or private lab connections are permitted.' });
       if (req.headers.origin && req.headers.origin !== (hosted ? auth.origin : `http://${req.headers.host}`)) return reply(res, 403, { error: 'Cross-origin requests are not allowed.' });
       if (url.pathname === '/api/health') return reply(res,storageFailure?503:200,{ok:!storageFailure,storage:storage?'PostgreSQL':'Memory',windowsLogsConfigured:Boolean(sensorToken)});
       if (url.pathname === '/api/auth/login' && req.method === 'POST' && hosted) {
@@ -301,7 +302,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const lan = process.argv.includes('--lan'), hosted=process.argv.includes('--hosted')||process.env.SOC_HOSTED==='true', port = Number(process.env.PORT || 8000);
   const publicUrl=process.env.PUBLIC_URL||process.env.RENDER_EXTERNAL_URL;
   const databaseUrl = process.env.DATABASE_URL;
-  if (hosted && !databaseUrl) throw new Error('Hosted mode requires DATABASE_URL. Connect a PostgreSQL database before starting.');
+  if (hosted && !databaseUrl) console.warn('Warning: Running hosted mode without DATABASE_URL. Data will use memory storage and will not persist across restarts. Add a PostgreSQL database for persistence.');
   const storage = databaseUrl ? new PostgresStore(databaseUrl) : null;
   const llm = createLLMProvider();
   const { server, ready, stop } = createLabServer({lan,hosted,seed:process.argv.includes('--seed'),password:process.env.SOC_ADMIN_PASSWORD,joinCode:process.env.LAB_JOIN_CODE,publicUrl,sensorToken:process.env.SENSOR_INGEST_TOKEN||'',storage,llm});
