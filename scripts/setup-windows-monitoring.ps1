@@ -12,7 +12,7 @@ Set-Location $projectRoot
 $auditCommands = @(
   @('/set', '/subcategory:Logon', '/success:enable', '/failure:enable'),
   @('/set', '/subcategory:Process Creation', '/success:enable'),
-  @('/set', '/subcategory:Account Management', '/success:enable', '/failure:enable'),
+  @('/set', '/category:Account Management', '/success:enable', '/failure:enable'),
   @('/set', '/subcategory:Filtering Platform Packet Drop', '/failure:enable')
 )
 foreach ($arguments in $auditCommands) {
